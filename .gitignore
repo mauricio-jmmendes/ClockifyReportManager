@@ -1,0 +1,41 @@
+# Build artifacts
+build/
+dist/
+*.spec
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+.eggs/
+*.manifest
+*.spec
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Test/Sample files - Clockify exports
+Clockify_Time_Report_*.xlsx
+*_Time_Report_*.xlsx
+Time_Report_*.xlsx
+
+# Logs
+*.log
+

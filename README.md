@@ -92,6 +92,42 @@ Coloque os dois arquivos exportados na mesma pasta do aplicativo. O app detectar
    - O arquivo será salvo com o nome: `Nome_Usuario_Time_Report_DD_MM_YYYY-DD_MM_YYYY.xlsx`
    - Se já existir um arquivo com o mesmo nome, você pode escolher sobrescrever ou criar um novo com numeração
 
+## Modo CLI (Linha de Comando)
+
+Para usuários avançados ou automação, existe também uma versão CLI do conversor.
+
+### Uso básico
+
+```bash
+# Auto-detectar arquivos na pasta atual (taxa padrão: 50)
+python clockify_report_converter.py
+
+# Com taxa personalizada
+python clockify_report_converter.py --rate 100
+
+# Especificando arquivos manualmente
+python clockify_report_converter.py --rate 100 \
+    --summary Clockify_Time_Report_Summary_01_12_2025-26_12_2025.xlsx \
+    --detailed Clockify_Time_Report_Detailed_01_12_2025-26_12_2025.xlsx \
+    --output Relatorio_Saida.xlsx
+```
+
+### Opções disponíveis
+
+| Opção | Descrição |
+|-------|-----------|
+| `--rate <valor>` | Taxa horária em BRL (padrão: 50) |
+| `--summary <arquivo>` | Caminho para o arquivo Summary |
+| `--detailed <arquivo>` | Caminho para o arquivo Detailed |
+| `--output <arquivo>` | Caminho para o arquivo de saída |
+
+### Quando usar o modo CLI?
+
+- Automação e scripts em lote
+- Integração com outros sistemas
+- Ambientes sem interface gráfica (servidores)
+- Usuários que preferem linha de comando
+
 ## Estrutura do arquivo gerado
 
 ### Aba "Summary Report"

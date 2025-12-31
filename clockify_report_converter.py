@@ -1,28 +1,27 @@
 """
 Clockify Report Converter
 
-This script converts Clockify Time Report files (Summary and Detailed) into a 
-formatted Excel report with the same structure and style as the target template.
+This script converts a Clockify Detailed Time Report into a formatted Excel report
+with both Summary and Detailed sheets. The Summary is automatically generated
+by aggregating data from the Detailed report.
 
 Usage:
     python clockify_report_converter.py [options]
 
 Options:
     --rate <value>      Billable rate per hour in BRL (default: 50)
-    --summary <file>    Path to Summary Excel file
-    --detailed <file>   Path to Detailed Excel file  
-    --output <file>     Path for output Excel file
+    --detailed <file>   Path to Detailed Excel file (auto-detected if not provided)
+    --output <file>     Path for output Excel file (auto-generated if not provided)
 
 Examples:
-    1. Auto-detect files with default rate (50):
+    1. Auto-detect Detailed file with default rate (50):
        python clockify_report_converter.py
     
-    2. Auto-detect files with custom rate:
+    2. Auto-detect with custom rate:
        python clockify_report_converter.py --rate 250
     
-    3. Manual file specification with custom rate:
+    3. Manual file specification:
        python clockify_report_converter.py --rate 200 \\
-           --summary Clockify_Time_Report_Summary_01_12_2025-26_12_2025.xlsx \\
            --detailed Clockify_Time_Report_Detailed_01_12_2025-26_12_2025.xlsx \\
            --output Time_Report_Output.xlsx
 """
@@ -70,15 +69,113 @@ def parse_date_range_from_filename(filename: str) -> tuple[str, str]:
     return None, None
 
 
-def load_clockify_data(summary_file: str, detailed_file: str):
-    """Load data from Clockify export files."""
-    summary_df = pd.read_excel(summary_file)
-    detailed_df = pd.read_excel(detailed_file)
-    return summary_df, detailed_df
+def load_detailed_data(detailed_file: str) -> pd.DataFrame:
+    """Load data from Clockify Detailed export file."""
+    return pd.read_excel(detailed_file)
 
 
-def create_summary_sheet(wb: Workbook, summary_df: pd.DataFrame, date_range: tuple, rate: float = DEFAULT_RATE):
-    """Create the Summary report sheet with proper formatting."""
+def decimal_to_time_str(decimal_hours: float) -> str:
+    """Convert decimal hours to HH:MM:SS format."""
+    total_seconds = int(round(decimal_hours * 3600))
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def time_str_to_decimal(time_str) -> float:
+    """Convert HH:MM:SS string to decimal hours with full precision.
+    
+    This avoids rounding errors that occur when summing pre-rounded decimal values.
+    """
+    if pd.isna(time_str) or not time_str:
+        return 0.0
+    
+    time_str = str(time_str)
+    parts = time_str.split(':')
+    
+    if len(parts) == 3:
+        try:
+            hours = int(parts[0])
+            minutes = int(parts[1])
+            seconds = int(parts[2])
+            return hours + minutes / 60 + seconds / 3600
+        except ValueError:
+            return 0.0
+    elif len(parts) == 2:
+        try:
+            hours = int(parts[0])
+            minutes = int(parts[1])
+            return hours + minutes / 60
+        except ValueError:
+            return 0.0
+    
+    return 0.0
+
+
+def build_summary_from_detailed(detailed_df: pd.DataFrame) -> list:
+    """
+    Build summary data by aggregating detailed report entries.
+    
+    Uses Duration (h) column (HH:MM:SS format) for precise calculations,
+    avoiding rounding errors from pre-rounded decimal values.
+    
+    Returns a list of dictionaries with summary rows structured as:
+    - Project header rows (with totals for each project)
+    - Description rows (with totals for each description within a project)
+    
+    Note: Time (decimal) stores full precision; rounding happens at display time.
+    """
+    summary_rows = []
+    
+    # Group by Project (maintaining order from detailed report)
+    for project in detailed_df['Project'].unique():
+        project_data = detailed_df[detailed_df['Project'] == project]
+        client = project_data['Client'].iloc[0]
+        project_name = f"{project} - {client}" if pd.notna(client) else project
+        
+        # Calculate project totals using Duration (h) for full precision
+        project_total_decimal = sum(
+            time_str_to_decimal(t) for t in project_data['Duration (h)']
+        )
+        project_time_h = decimal_to_time_str(project_total_decimal)
+        
+        # Add project header row - store full precision, round at display
+        summary_rows.append({
+            'Project': project_name,
+            'Description': None,
+            'Time (h)': project_time_h,
+            'Time (decimal)': project_total_decimal  # Full precision
+        })
+        
+        # Group by Description within project (maintaining order)
+        for description in project_data['Description'].unique():
+            desc_data = project_data[project_data['Description'] == description]
+            # Use Duration (h) for full precision
+            desc_total_decimal = sum(
+                time_str_to_decimal(t) for t in desc_data['Duration (h)']
+            )
+            desc_time_h = decimal_to_time_str(desc_total_decimal)
+            
+            summary_rows.append({
+                'Project': None,
+                'Description': description,
+                'Time (h)': desc_time_h,
+                'Time (decimal)': desc_total_decimal  # Full precision
+            })
+    
+    return summary_rows
+
+
+def create_summary_sheet(wb: Workbook, summary_data: list, date_range: tuple, rate: float = DEFAULT_RATE):
+    """Create the Summary report sheet with proper formatting.
+    
+    Args:
+        wb: Workbook to add the sheet to
+        summary_data: List of dictionaries with summary rows (from build_summary_from_detailed)
+        date_range: Tuple of (start_date, end_date) strings
+        rate: Billable rate per hour
+    """
     ws = wb.create_sheet("Summary report ")
     
     # Column widths
@@ -110,28 +207,22 @@ def create_summary_sheet(wb: Workbook, summary_df: pd.DataFrame, date_range: tup
     for col in range(1, 6):
         ws.cell(row=4, column=col).fill = DARK_FILL
     
-    # Row 4: Empty
+    # Calculate total time decimal from project-level rows only
+    total_time_decimal = sum(
+        row['Time (decimal)'] for row in summary_data 
+        if row['Project'] is not None
+    )
     
-    # Filter out any existing "Total" rows from source data
-    summary_df = summary_df[~summary_df['Project'].astype(str).str.contains('Total', case=False, na=False)]
-    
-    # Calculate total time decimal from project-level rows only (before writing data)
-    total_time_decimal = 0
-    for idx, row in summary_df.iterrows():
-        if pd.notna(row['Project']) and pd.notna(row['Time (decimal)']):
-            total_time_decimal += float(row['Time (decimal)'])
-    
-    # Process summary data - group by project
+    # Process summary data
     current_row = 5
     
-    for idx, row in summary_df.iterrows():
+    for row in summary_data:
         project = row['Project']
         description = row['Description']
         time_h = row['Time (h)']
         time_decimal = row['Time (decimal)']
-        amount = row['Amount (BRL)']
         
-        if pd.notna(project):
+        if project is not None:
             # This is a project header row - dark background, yellow text, size 10
             for col in range(1, 6):
                 ws.cell(row=current_row, column=col).fill = DARK_FILL
@@ -144,6 +235,7 @@ def create_summary_sheet(wb: Workbook, summary_df: pd.DataFrame, date_range: tup
             
             cell = ws.cell(row=current_row, column=4, value=time_decimal)
             cell.font = YELLOW_FONT_SIZE10
+            cell.number_format = '#,##0.00'
             
             # Amount (BRL) = Time (decimal) * rate
             cell = ws.cell(row=current_row, column=5, value=f"=D{current_row}*{rate}")
@@ -151,7 +243,7 @@ def create_summary_sheet(wb: Workbook, summary_df: pd.DataFrame, date_range: tup
             cell.number_format = '#,##0.00'
             
             current_row += 1
-        elif pd.notna(description):
+        elif description is not None:
             # This is a description row under a project - no fill, font size 10
             cell = ws.cell(row=current_row, column=2, value=description)
             cell.font = DATA_FONT
@@ -159,6 +251,7 @@ def create_summary_sheet(wb: Workbook, summary_df: pd.DataFrame, date_range: tup
             cell.font = DATA_FONT
             cell = ws.cell(row=current_row, column=4, value=time_decimal)
             cell.font = DATA_FONT
+            cell.number_format = '#,##0.00'
             # Amount (BRL) = Time (decimal) * rate
             cell = ws.cell(row=current_row, column=5, value=f"=D{current_row}*{rate}")
             cell.font = DATA_FONT
@@ -177,16 +270,14 @@ def create_summary_sheet(wb: Workbook, summary_df: pd.DataFrame, date_range: tup
     cell.font = YELLOW_FONT_SIZE10
     
     # Calculate total time in h:mm:ss format
-    total_hours = int(total_time_decimal)
-    total_minutes = int((total_time_decimal - total_hours) * 60)
-    total_seconds = int(((total_time_decimal - total_hours) * 60 - total_minutes) * 60)
-    total_time_str = f"{total_hours:02d}:{total_minutes:02d}:{total_seconds:02d}"
+    total_time_str = decimal_to_time_str(total_time_decimal)
     
     cell = ws.cell(row=current_row, column=3, value=total_time_str)
     cell.font = YELLOW_FONT_SIZE10
     
-    cell = ws.cell(row=current_row, column=4, value=round(total_time_decimal, 2))
+    cell = ws.cell(row=current_row, column=4, value=total_time_decimal)
     cell.font = YELLOW_FONT_SIZE10
+    cell.number_format = '#,##0.00'
     
     # Formula for amount: time_decimal * rate
     cell = ws.cell(row=current_row, column=5, value=f"=D{current_row}*{rate}")
@@ -310,8 +401,8 @@ def create_detailed_sheet(wb: Workbook, detailed_df: pd.DataFrame, rate: float =
         cell.font = DATA_FONT
         cell.number_format = 'h:mm:ss'
         
-        # Column K: Duration (decimal)
-        duration_decimal = row['Duration (decimal)']
+        # Column K: Duration (decimal) - use full precision from Duration (h)
+        duration_decimal = time_str_to_decimal(duration_h)
         cell = ws.cell(row=data_row, column=11, value=duration_decimal)
         cell.font = DATA_FONT
         cell.number_format = '#,##0.00'
@@ -352,23 +443,26 @@ def create_detailed_sheet(wb: Workbook, detailed_df: pd.DataFrame, rate: float =
     return ws
 
 
-def convert_clockify_reports(summary_file: str, detailed_file: str, output_file: str, rate: float = DEFAULT_RATE):
-    """Main function to convert Clockify reports to the target format."""
+def convert_clockify_report(detailed_file: str, output_file: str, rate: float = DEFAULT_RATE):
+    """Main function to convert Clockify Detailed report to the target format.
+    
+    The Summary sheet is automatically generated from the Detailed report data.
+    """
     print(f"Loading data from:")
-    print(f"  Summary: {summary_file}")
     print(f"  Detailed: {detailed_file}")
     print(f"  Billable Rate: {rate} BRL/hour")
     
-    # Load data
-    summary_df, detailed_df = load_clockify_data(summary_file, detailed_file)
+    # Load detailed data
+    detailed_df = load_detailed_data(detailed_file)
     
-    print(f"\nSummary rows: {len(summary_df)}")
-    print(f"Detailed rows: {len(detailed_df)}")
+    print(f"\nDetailed rows: {len(detailed_df)}")
+    
+    # Build summary from detailed data
+    summary_data = build_summary_from_detailed(detailed_df)
+    print(f"Summary rows generated: {len(summary_data)}")
     
     # Extract date range from filename
-    date_range = parse_date_range_from_filename(summary_file)
-    if not date_range[0]:
-        date_range = parse_date_range_from_filename(detailed_file)
+    date_range = parse_date_range_from_filename(detailed_file)
     
     print(f"Date range: {date_range[0]} - {date_range[1]}")
     
@@ -379,7 +473,7 @@ def convert_clockify_reports(summary_file: str, detailed_file: str, output_file:
     default_sheet = wb.active
     
     # Create sheets
-    create_summary_sheet(wb, summary_df, date_range, rate)
+    create_summary_sheet(wb, summary_data, date_range, rate)
     create_detailed_sheet(wb, detailed_df, rate)
     
     # Remove default sheet
@@ -390,46 +484,34 @@ def convert_clockify_reports(summary_file: str, detailed_file: str, output_file:
     print(f"\nOutput saved to: {output_file}")
 
 
-def find_clockify_files():
+def find_detailed_file():
     """
-    Search for Clockify export files in the script's directory.
-    Returns tuple of (summary_file, detailed_file) or (None, None) if not found.
+    Search for Clockify Detailed export file in the script's directory.
+    Returns the path to the most recent file, or None if not found.
     """
-    # Search for Summary file
-    summary_pattern = os.path.join(SCRIPT_DIR, "Clockify_Time_Report_Summary_*.xlsx")
-    summary_files = glob.glob(summary_pattern)
-    
     # Search for Detailed file
     detailed_pattern = os.path.join(SCRIPT_DIR, "Clockify_Time_Report_Detailed_*.xlsx")
     detailed_files = glob.glob(detailed_pattern)
     
-    if not summary_files:
-        print(f"Error: No Summary file found matching pattern: Clockify_Time_Report_Summary_*.xlsx")
-        print(f"Searched in: {SCRIPT_DIR}")
-        return None, None
-    
     if not detailed_files:
         print(f"Error: No Detailed file found matching pattern: Clockify_Time_Report_Detailed_*.xlsx")
         print(f"Searched in: {SCRIPT_DIR}")
-        return None, None
+        return None
     
     # Use the most recent file if multiple matches (sorted by modification time)
-    summary_file = max(summary_files, key=os.path.getmtime)
     detailed_file = max(detailed_files, key=os.path.getmtime)
     
-    return summary_file, detailed_file
+    return detailed_file
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Convert Clockify Time Reports to formatted Excel report.',
+        description='Convert Clockify Detailed Report to formatted Excel with Summary and Detailed sheets.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )
     parser.add_argument('--rate', type=float, default=DEFAULT_RATE,
                         help=f'Billable rate per hour in BRL (default: {DEFAULT_RATE})')
-    parser.add_argument('--summary', type=str, default=None,
-                        help='Path to Summary Excel file (auto-detected if not provided)')
     parser.add_argument('--detailed', type=str, default=None,
                         help='Path to Detailed Excel file (auto-detected if not provided)')
     parser.add_argument('--output', type=str, default=None,
@@ -437,15 +519,14 @@ def main():
     
     args = parser.parse_args()
     
-    # Determine input files
-    if args.summary and args.detailed:
-        summary_file = args.summary
+    # Determine input file
+    if args.detailed:
         detailed_file = args.detailed
     else:
-        # Auto-detect files in script directory
-        summary_file, detailed_file = find_clockify_files()
+        # Auto-detect file in script directory
+        detailed_file = find_detailed_file()
         
-        if summary_file is None or detailed_file is None:
+        if detailed_file is None:
             sys.exit(1)
     
     # Determine output file
@@ -453,14 +534,14 @@ def main():
         output_file = args.output
     else:
         # Generate output filename based on input file date range
-        date_range = parse_date_range_from_filename(summary_file)
+        date_range = parse_date_range_from_filename(detailed_file)
         if date_range[0] and date_range[1]:
             output_name = f"Time_Report_Generated_{date_range[0].replace('/', '_')}-{date_range[1].replace('/', '_')}.xlsx"
         else:
             output_name = "Time_Report_Generated.xlsx"
         output_file = os.path.join(SCRIPT_DIR, output_name)
     
-    convert_clockify_reports(summary_file, detailed_file, output_file, args.rate)
+    convert_clockify_report(detailed_file, output_file, args.rate)
 
 
 if __name__ == "__main__":

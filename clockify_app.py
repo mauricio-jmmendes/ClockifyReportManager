@@ -1,8 +1,9 @@
 """
 Clockify Report Converter - Desktop App
 
-A modern desktop application to convert Clockify Time Reports
-into formatted Excel reports.
+A modern desktop application to convert Clockify Detailed Time Reports
+into formatted Excel reports. The Summary sheet is automatically generated
+by aggregating data from the Detailed report.
 """
 
 import os
@@ -74,15 +75,113 @@ def parse_date_range_from_filename(filename: str) -> tuple[str, str]:
     return None, None
 
 
-def load_clockify_data(summary_file: str, detailed_file: str):
-    """Load data from Clockify export files."""
-    summary_df = pd.read_excel(summary_file)
-    detailed_df = pd.read_excel(detailed_file)
-    return summary_df, detailed_df
+def load_detailed_data(detailed_file: str) -> pd.DataFrame:
+    """Load data from Clockify Detailed export file."""
+    return pd.read_excel(detailed_file)
 
 
-def create_summary_sheet(wb: Workbook, summary_df: pd.DataFrame, date_range: tuple, rate: float = DEFAULT_RATE):
-    """Create the Summary report sheet with proper formatting."""
+def decimal_to_time_str(decimal_hours: float) -> str:
+    """Convert decimal hours to HH:MM:SS format."""
+    total_seconds = int(round(decimal_hours * 3600))
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def time_str_to_decimal(time_str) -> float:
+    """Convert HH:MM:SS string to decimal hours with full precision.
+    
+    This avoids rounding errors that occur when summing pre-rounded decimal values.
+    """
+    if pd.isna(time_str) or not time_str:
+        return 0.0
+    
+    time_str = str(time_str)
+    parts = time_str.split(':')
+    
+    if len(parts) == 3:
+        try:
+            hours = int(parts[0])
+            minutes = int(parts[1])
+            seconds = int(parts[2])
+            return hours + minutes / 60 + seconds / 3600
+        except ValueError:
+            return 0.0
+    elif len(parts) == 2:
+        try:
+            hours = int(parts[0])
+            minutes = int(parts[1])
+            return hours + minutes / 60
+        except ValueError:
+            return 0.0
+    
+    return 0.0
+
+
+def build_summary_from_detailed(detailed_df: pd.DataFrame) -> list:
+    """
+    Build summary data by aggregating detailed report entries.
+    
+    Uses Duration (h) column (HH:MM:SS format) for precise calculations,
+    avoiding rounding errors from pre-rounded decimal values.
+    
+    Returns a list of dictionaries with summary rows structured as:
+    - Project header rows (with totals for each project)
+    - Description rows (with totals for each description within a project)
+    
+    Note: Time (decimal) stores full precision; rounding happens at display time.
+    """
+    summary_rows = []
+    
+    # Group by Project (maintaining order from detailed report)
+    for project in detailed_df['Project'].unique():
+        project_data = detailed_df[detailed_df['Project'] == project]
+        client = project_data['Client'].iloc[0]
+        project_name = f"{project} - {client}" if pd.notna(client) else project
+        
+        # Calculate project totals using Duration (h) for full precision
+        project_total_decimal = sum(
+            time_str_to_decimal(t) for t in project_data['Duration (h)']
+        )
+        project_time_h = decimal_to_time_str(project_total_decimal)
+        
+        # Add project header row - store full precision, round at display
+        summary_rows.append({
+            'Project': project_name,
+            'Description': None,
+            'Time (h)': project_time_h,
+            'Time (decimal)': project_total_decimal  # Full precision
+        })
+        
+        # Group by Description within project (maintaining order)
+        for description in project_data['Description'].unique():
+            desc_data = project_data[project_data['Description'] == description]
+            # Use Duration (h) for full precision
+            desc_total_decimal = sum(
+                time_str_to_decimal(t) for t in desc_data['Duration (h)']
+            )
+            desc_time_h = decimal_to_time_str(desc_total_decimal)
+            
+            summary_rows.append({
+                'Project': None,
+                'Description': description,
+                'Time (h)': desc_time_h,
+                'Time (decimal)': desc_total_decimal  # Full precision
+            })
+    
+    return summary_rows
+
+
+def create_summary_sheet(wb: Workbook, summary_data: list, date_range: tuple, rate: float = DEFAULT_RATE):
+    """Create the Summary report sheet with proper formatting.
+    
+    Args:
+        wb: Workbook to add the sheet to
+        summary_data: List of dictionaries with summary rows (from build_summary_from_detailed)
+        date_range: Tuple of (start_date, end_date) strings
+        rate: Billable rate per hour
+    """
     ws = wb.create_sheet("Summary report ")
     
     col_widths = {'A': 39.14, 'B': 87.14, 'C': 16.29, 'D': 19.0, 'E': 21.86}
@@ -109,22 +208,21 @@ def create_summary_sheet(wb: Workbook, summary_df: pd.DataFrame, date_range: tup
     for col in range(1, 6):
         ws.cell(row=4, column=col).fill = DARK_FILL
     
-    summary_df = summary_df[~summary_df['Project'].astype(str).str.contains('Total', case=False, na=False)]
-    
-    total_time_decimal = 0
-    for idx, row in summary_df.iterrows():
-        if pd.notna(row['Project']) and pd.notna(row['Time (decimal)']):
-            total_time_decimal += float(row['Time (decimal)'])
+    # Calculate total time decimal from project-level rows only
+    total_time_decimal = sum(
+        row['Time (decimal)'] for row in summary_data 
+        if row['Project'] is not None
+    )
     
     current_row = 5
     
-    for idx, row in summary_df.iterrows():
+    for row in summary_data:
         project = row['Project']
         description = row['Description']
         time_h = row['Time (h)']
         time_decimal = row['Time (decimal)']
         
-        if pd.notna(project):
+        if project is not None:
             for col in range(1, 6):
                 ws.cell(row=current_row, column=col).fill = DARK_FILL
             
@@ -136,19 +234,21 @@ def create_summary_sheet(wb: Workbook, summary_df: pd.DataFrame, date_range: tup
             
             cell = ws.cell(row=current_row, column=4, value=time_decimal)
             cell.font = YELLOW_FONT_SIZE10
+            cell.number_format = '#,##0.00'
             
             cell = ws.cell(row=current_row, column=5, value=f"=D{current_row}*{rate}")
             cell.font = YELLOW_FONT_SIZE10
             cell.number_format = '#,##0.00'
             
             current_row += 1
-        elif pd.notna(description):
+        elif description is not None:
             cell = ws.cell(row=current_row, column=2, value=description)
             cell.font = DATA_FONT
             cell = ws.cell(row=current_row, column=3, value=time_h)
             cell.font = DATA_FONT
             cell = ws.cell(row=current_row, column=4, value=time_decimal)
             cell.font = DATA_FONT
+            cell.number_format = '#,##0.00'
             cell = ws.cell(row=current_row, column=5, value=f"=D{current_row}*{rate}")
             cell.font = DATA_FONT
             cell.number_format = '#,##0.00'
@@ -163,16 +263,14 @@ def create_summary_sheet(wb: Workbook, summary_df: pd.DataFrame, date_range: tup
     cell = ws.cell(row=current_row, column=1, value=total_label)
     cell.font = YELLOW_FONT_SIZE10
     
-    total_hours = int(total_time_decimal)
-    total_minutes = int((total_time_decimal - total_hours) * 60)
-    total_seconds = int(((total_time_decimal - total_hours) * 60 - total_minutes) * 60)
-    total_time_str = f"{total_hours:02d}:{total_minutes:02d}:{total_seconds:02d}"
+    total_time_str = decimal_to_time_str(total_time_decimal)
     
     cell = ws.cell(row=current_row, column=3, value=total_time_str)
     cell.font = YELLOW_FONT_SIZE10
     
-    cell = ws.cell(row=current_row, column=4, value=round(total_time_decimal, 2))
+    cell = ws.cell(row=current_row, column=4, value=total_time_decimal)
     cell.font = YELLOW_FONT_SIZE10
+    cell.number_format = '#,##0.00'
     
     cell = ws.cell(row=current_row, column=5, value=f"=D{current_row}*{rate}")
     cell.font = YELLOW_FONT_SIZE10
@@ -278,7 +376,8 @@ def create_detailed_sheet(wb: Workbook, detailed_df: pd.DataFrame, rate: float =
         cell.font = DATA_FONT
         cell.number_format = 'h:mm:ss'
         
-        duration_decimal = row['Duration (decimal)']
+        # Use full precision from Duration (h) instead of pre-rounded decimal
+        duration_decimal = time_str_to_decimal(duration_h)
         cell = ws.cell(row=data_row, column=11, value=duration_decimal)
         cell.font = DATA_FONT
         cell.number_format = '#,##0.00'
@@ -314,51 +413,49 @@ def create_detailed_sheet(wb: Workbook, detailed_df: pd.DataFrame, rate: float =
     return ws
 
 
-def convert_clockify_reports(summary_file: str, detailed_file: str, output_file: str, rate: float = DEFAULT_RATE):
-    """Main function to convert Clockify reports to the target format."""
-    summary_df, detailed_df = load_clockify_data(summary_file, detailed_file)
+def convert_clockify_report(detailed_file: str, output_file: str, rate: float = DEFAULT_RATE):
+    """Main function to convert Clockify Detailed report to the target format.
     
-    date_range = parse_date_range_from_filename(summary_file)
-    if not date_range[0]:
-        date_range = parse_date_range_from_filename(detailed_file)
+    The Summary sheet is automatically generated from the Detailed report data.
+    
+    Returns:
+        Tuple of (summary_rows_count, detailed_rows_count)
+    """
+    # Load detailed data
+    detailed_df = load_detailed_data(detailed_file)
+    
+    # Build summary from detailed data
+    summary_data = build_summary_from_detailed(detailed_df)
+    
+    # Extract date range from filename
+    date_range = parse_date_range_from_filename(detailed_file)
     
     wb = Workbook()
     default_sheet = wb.active
     
-    create_summary_sheet(wb, summary_df, date_range, rate)
+    create_summary_sheet(wb, summary_data, date_range, rate)
     create_detailed_sheet(wb, detailed_df, rate)
     
     wb.remove(default_sheet)
     wb.save(output_file)
     
-    return len(summary_df), len(detailed_df)
+    return len(summary_data), len(detailed_df)
 
 
-def find_clockify_files():
+def find_detailed_file():
     """
-    Search for Clockify export files in the app's directory.
-    Returns tuple of (summary_file, detailed_file) or (None, None) if not found.
+    Search for Clockify Detailed export file in the app's directory.
+    Returns the path to the most recent file, or None if not found.
     """
-    # Search for Summary file
-    summary_pattern = os.path.join(APP_DIR, "Clockify_Time_Report_Summary_*.xlsx")
-    summary_files = glob.glob(summary_pattern)
-    
     # Search for Detailed file
     detailed_pattern = os.path.join(APP_DIR, "Clockify_Time_Report_Detailed_*.xlsx")
     detailed_files = glob.glob(detailed_pattern)
     
-    summary_file = None
-    detailed_file = None
+    if not detailed_files:
+        return None
     
-    if summary_files:
-        # Use the most recent file if multiple matches
-        summary_file = max(summary_files, key=os.path.getmtime)
-    
-    if detailed_files:
-        # Use the most recent file if multiple matches
-        detailed_file = max(detailed_files, key=os.path.getmtime)
-    
-    return summary_file, detailed_file
+    # Use the most recent file if multiple matches
+    return max(detailed_files, key=os.path.getmtime)
 
 
 # ============================================================================
@@ -381,8 +478,8 @@ class FileDropFrame(ctk.CTkFrame):
             border_color=INPUT_BG
         )
         
-        # Icon/emoji based on file type
-        icon = "📊" if "Summary" in file_type else "📋"
+        # Icon/emoji
+        icon = "📋"
         
         self.icon_label = ctk.CTkLabel(
             self,
@@ -399,12 +496,20 @@ class FileDropFrame(ctk.CTkFrame):
         )
         self.title_label.pack(pady=(0, 5))
         
+        self.subtitle_label = ctk.CTkLabel(
+            self,
+            text="Summary will be auto-generated",
+            font=ctk.CTkFont(family="Segoe UI", size=10),
+            text_color=ACCENT_COLOR
+        )
+        self.subtitle_label.pack(pady=(0, 5))
+        
         self.file_label = ctk.CTkLabel(
             self,
             text="No file selected",
             font=ctk.CTkFont(family="Segoe UI", size=11),
             text_color=TEXT_SECONDARY,
-            wraplength=200
+            wraplength=400
         )
         self.file_label.pack(pady=(0, 10))
         
@@ -452,15 +557,15 @@ class ClockifyApp(ctk.CTk):
         
         # Window setup
         self.title(APP_NAME)
-        self.geometry("700x750")
-        self.minsize(600, 700)
+        self.geometry("700x720")
+        self.minsize(600, 680)
         self.configure(fg_color=DARK_BG)
         
         # Center window on screen
         self.update_idletasks()
         x = (self.winfo_screenwidth() - 700) // 2
-        y = (self.winfo_screenheight() - 750) // 2
-        self.geometry(f"700x750+{x}+{y}")
+        y = (self.winfo_screenheight() - 720) // 2
+        self.geometry(f"700x720+{x}+{y}")
         
         self._create_widgets()
     
@@ -495,32 +600,20 @@ class ClockifyApp(ctk.CTk):
         
         files_label = ctk.CTkLabel(
             files_frame,
-            text="INPUT FILES",
+            text="INPUT FILE",
             font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
             text_color=ACCENT_COLOR
         )
         files_label.pack(anchor="w", pady=(0, 10))
         
-        # File drop zones container
-        drop_container = ctk.CTkFrame(files_frame, fg_color="transparent")
-        drop_container.pack(fill="x")
-        drop_container.grid_columnconfigure((0, 1), weight=1, uniform="files")
-        
-        self.summary_frame = FileDropFrame(
-            drop_container,
-            label_text="Summary Report",
-            file_type="Summary",
-            height=180
-        )
-        self.summary_frame.grid(row=0, column=0, padx=(0, 10), sticky="nsew")
-        
+        # Single file drop zone for Detailed report
         self.detailed_frame = FileDropFrame(
-            drop_container,
-            label_text="Detailed Report",
+            files_frame,
+            label_text="Clockify Detailed Report",
             file_type="Detailed",
-            height=180
+            height=160
         )
-        self.detailed_frame.grid(row=0, column=1, padx=(10, 0), sticky="nsew")
+        self.detailed_frame.pack(fill="x")
         
         # Settings section
         settings_frame = ctk.CTkFrame(main_frame, fg_color=CARD_BG, corner_radius=12)
@@ -676,11 +769,8 @@ class ClockifyApp(ctk.CTk):
         self._auto_detect_files()
     
     def _auto_detect_files(self):
-        """Try to find Clockify files in the app directory and pre-populate."""
-        summary_file, detailed_file = find_clockify_files()
-        
-        if summary_file:
-            self.summary_frame.set_file(summary_file)
+        """Try to find Clockify Detailed file in the app directory and pre-populate."""
+        detailed_file = find_detailed_file()
         
         if detailed_file:
             self.detailed_frame.set_file(detailed_file)
@@ -702,13 +792,8 @@ class ClockifyApp(ctk.CTk):
     
     def start_conversion(self):
         """Validate inputs and start conversion in background thread."""
-        # Validate files
-        summary_file = self.summary_frame.get_file()
+        # Validate file
         detailed_file = self.detailed_frame.get_file()
-        
-        if not summary_file:
-            self.set_status("Please select a Summary report file", is_error=True)
-            return
         
         if not detailed_file:
             self.set_status("Please select a Detailed report file", is_error=True)
@@ -746,16 +831,16 @@ class ClockifyApp(ctk.CTk):
         # Run conversion in background thread
         thread = threading.Thread(
             target=self._run_conversion,
-            args=(summary_file, detailed_file, rate, user_name, output_folder),
+            args=(detailed_file, rate, user_name, output_folder),
             daemon=True
         )
         thread.start()
     
-    def _generate_output_path(self, summary_file, user_name, output_folder):
+    def _generate_output_path(self, detailed_file, user_name, output_folder):
         """Generate the output file path based on user name and date range."""
         user_name_formatted = user_name.replace(' ', '_')
         
-        date_range = parse_date_range_from_filename(summary_file)
+        date_range = parse_date_range_from_filename(detailed_file)
         if date_range[0] and date_range[1]:
             base_name = f"{user_name_formatted}_Time_Report_{date_range[0].replace('/', '_')}-{date_range[1].replace('/', '_')}"
         else:
@@ -778,24 +863,24 @@ class ClockifyApp(ctk.CTk):
                 return output_file
             counter += 1
     
-    def _run_conversion(self, summary_file, detailed_file, rate, user_name, output_folder):
+    def _run_conversion(self, detailed_file, rate, user_name, output_folder):
         """Run the actual conversion (called from background thread)."""
         try:
             # Generate base output path
-            folder, base_name = self._generate_output_path(summary_file, user_name, output_folder)
+            folder, base_name = self._generate_output_path(detailed_file, user_name, output_folder)
             output_file = os.path.join(folder, f"{base_name}.xlsx")
             
             # Check if file exists - need to handle on main thread for dialog
             if os.path.exists(output_file):
                 # Schedule dialog on main thread and wait for response
                 self.after(0, lambda: self._handle_file_exists(
-                    summary_file, detailed_file, rate, output_file, folder, base_name
+                    detailed_file, rate, output_file, folder, base_name
                 ))
                 return
             
             # Perform conversion
-            summary_rows, detailed_rows = convert_clockify_reports(
-                summary_file, detailed_file, output_file, rate
+            summary_rows, detailed_rows = convert_clockify_report(
+                detailed_file, output_file, rate
             )
             
             # Update UI on main thread
@@ -805,7 +890,7 @@ class ClockifyApp(ctk.CTk):
             error_msg = str(e)
             self.after(0, lambda msg=error_msg: self._conversion_error(msg))
     
-    def _handle_file_exists(self, summary_file, detailed_file, rate, output_file, folder, base_name):
+    def _handle_file_exists(self, detailed_file, rate, output_file, folder, base_name):
         """Handle case when output file already exists."""
         # Ask user what to do
         response = messagebox.askyesnocancel(
@@ -835,16 +920,16 @@ class ClockifyApp(ctk.CTk):
         # Run conversion in background thread
         thread = threading.Thread(
             target=self._do_conversion,
-            args=(summary_file, detailed_file, rate, final_output),
+            args=(detailed_file, rate, final_output),
             daemon=True
         )
         thread.start()
     
-    def _do_conversion(self, summary_file, detailed_file, rate, output_file):
+    def _do_conversion(self, detailed_file, rate, output_file):
         """Perform the actual file conversion."""
         try:
-            summary_rows, detailed_rows = convert_clockify_reports(
-                summary_file, detailed_file, output_file, rate
+            summary_rows, detailed_rows = convert_clockify_report(
+                detailed_file, output_file, rate
             )
             self.after(0, lambda: self._conversion_complete(output_file, summary_rows, detailed_rows))
         except Exception as e:

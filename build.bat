@@ -40,6 +40,7 @@ python -m PyInstaller ^
     --windowed ^
     --name "ClockifyReportConverter" ^
     --add-data "requirements.txt;." ^
+    --hidden-import clockify_pdf_loader ^
     --clean ^
     --noconfirm ^
     clockify_app.py

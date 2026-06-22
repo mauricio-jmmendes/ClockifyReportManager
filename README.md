@@ -62,10 +62,14 @@ O executável será criado na pasta `dist/`
 
 ### Passo 1: Exportar relatório do Clockify
 
-No Clockify, exporte o **Detailed Report** em formato Excel (.xlsx):
+No Clockify, exporte o **Detailed Report** em formato PDF:
 
 - **Detailed Report** - Relatório detalhado com todas as entradas
-  - Nome esperado: `Clockify_Time_Report_Detailed_DD_MM_YYYY-DD_MM_YYYY.xlsx`
+  - Nome esperado: `Clockify_Time_Report_Detailed_DD_MM_YYYY-DD_MM_YYYY.pdf`
+
+> **Nota:** No plano Free do Clockify, apenas exportação em PDF está disponível. O aplicativo também aceita arquivos Excel (.xlsx) de exportações anteriores.
+
+> **Dica:** Para incluir Project, Client, Tags e horários no PDF, use Export → Customize no Clockify e habilite as colunas desejadas. O conversor detecta automaticamente quais colunas estão presentes.
 
 > **Nota:** O Summary Report é gerado automaticamente a partir do Detailed Report, não é necessário exportá-lo separadamente.
 
@@ -107,7 +111,7 @@ python clockify_report_converter.py --rate 150
 
 # Especificando arquivo manualmente
 python clockify_report_converter.py --rate 150 \
-    --detailed Clockify_Time_Report_Detailed_01_12_2025-26_12_2025.xlsx \
+    --detailed Clockify_Time_Report_Detailed_01_12_2025-26_12_2025.pdf \
     --output Relatorio_Saida.xlsx
 ```
 
@@ -168,12 +172,12 @@ O aplicativo utiliza a coluna `Duration (h)` (formato HH:MM:SS) para todos os c�
 
 ### Arquivo não detectado automaticamente
 
-- Verifique se o nome do arquivo segue o padrão do Clockify: `Clockify_Time_Report_Detailed_*.xlsx`
+- Verifique se o nome do arquivo segue o padrão do Clockify: `Clockify_Time_Report_Detailed_*.pdf`
 - Use o botão "Browse" para selecionar manualmente
 
 ### Erro ao ler o arquivo
 
-- Certifique-se de que o arquivo é uma exportação válida do Clockify em formato .xlsx
+- Certifique-se de que o arquivo é uma exportação válida do Clockify em formato PDF (ou Excel, para exportações legadas)
 
 ### Totais não coincidem com o Clockify
 
@@ -186,6 +190,7 @@ O aplicativo utiliza a coluna `Duration (h)` (formato HH:MM:SS) para todos os c�
 - customtkinter >= 5.2.0
 - pandas >= 2.0.0
 - openpyxl >= 3.1.0
+- pdfplumber >= 0.11.0
 - pyinstaller >= 6.0.0 (apenas para build)
 
 ## Licença

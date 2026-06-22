@@ -33,6 +33,7 @@ desktop.ini
 
 # Test/Sample files - Clockify exports
 Clockify_Time_Report_*.xlsx
+Clockify_Time_Report_*.pdf
 *_Time_Report_*.xlsx
 Time_Report_*.xlsx
 

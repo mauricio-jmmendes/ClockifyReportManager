@@ -10,7 +10,7 @@ Usage:
 
 Options:
     --rate <value>      Billable rate per hour in BRL (default: 50)
-    --detailed <file>   Path to Detailed Excel file (auto-detected if not provided)
+    --detailed <file>   Path to Detailed PDF or Excel file (auto-detected if not provided)
     --output <file>     Path for output Excel file (auto-generated if not provided)
 
 Examples:
@@ -22,7 +22,7 @@ Examples:
     
     3. Manual file specification:
        python clockify_report_converter.py --rate 200 \\
-           --detailed Clockify_Time_Report_Detailed_01_12_2025-26_12_2025.xlsx \\
+           --detailed Clockify_Time_Report_Detailed_01_12_2025-26_12_2025.pdf \\
            --output Time_Report_Output.xlsx
 """
 
@@ -32,6 +32,8 @@ import glob
 import argparse
 import pandas as pd
 from datetime import datetime
+
+from clockify_pdf_loader import load_detailed_data_from_pdf, parse_date_range_from_pdf_text
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 from openpyxl.utils.dataframe import dataframe_to_rows
@@ -69,9 +71,35 @@ def parse_date_range_from_filename(filename: str) -> tuple[str, str]:
     return None, None
 
 
+def parse_date_range(detailed_file: str) -> tuple[str, str]:
+    """Extract date range from filename, falling back to PDF header text."""
+    date_range = parse_date_range_from_filename(detailed_file)
+    if date_range[0] and date_range[1]:
+        return date_range
+    if detailed_file.lower().endswith(".pdf"):
+        return parse_date_range_from_pdf_text(detailed_file)
+    return None, None
+
+
 def load_detailed_data(detailed_file: str) -> pd.DataFrame:
-    """Load data from Clockify Detailed export file."""
-    return pd.read_excel(detailed_file)
+    """Load data from Clockify Detailed export file (PDF or Excel)."""
+    ext = os.path.splitext(detailed_file)[1].lower()
+    if ext == ".pdf":
+        return load_detailed_data_from_pdf(detailed_file)
+    if ext in (".xlsx", ".xls"):
+        return pd.read_excel(detailed_file)
+    raise ValueError(f"Unsupported file format: {ext}. Use PDF or Excel.")
+
+
+def load_and_validate_detailed_data(detailed_file: str) -> pd.DataFrame:
+    """Load detailed report data and ensure at least one entry exists."""
+    detailed_df = load_detailed_data(detailed_file)
+    if detailed_df.empty:
+        raise ValueError(
+            "No time entries found in the report. "
+            "Check that the PDF contains data and is a Clockify Detailed export."
+        )
+    return detailed_df
 
 
 def decimal_to_time_str(decimal_hours: float) -> str:
@@ -453,7 +481,7 @@ def convert_clockify_report(detailed_file: str, output_file: str, rate: float = 
     print(f"  Billable Rate: {rate} BRL/hour")
     
     # Load detailed data
-    detailed_df = load_detailed_data(detailed_file)
+    detailed_df = load_and_validate_detailed_data(detailed_file)
     
     print(f"\nDetailed rows: {len(detailed_df)}")
     
@@ -461,8 +489,8 @@ def convert_clockify_report(detailed_file: str, output_file: str, rate: float = 
     summary_data = build_summary_from_detailed(detailed_df)
     print(f"Summary rows generated: {len(summary_data)}")
     
-    # Extract date range from filename
-    date_range = parse_date_range_from_filename(detailed_file)
+    # Extract date range from filename or PDF header
+    date_range = parse_date_range(detailed_file)
     
     print(f"Date range: {date_range[0]} - {date_range[1]}")
     
@@ -489,12 +517,15 @@ def find_detailed_file():
     Search for Clockify Detailed export file in the script's directory.
     Returns the path to the most recent file, or None if not found.
     """
-    # Search for Detailed file
-    detailed_pattern = os.path.join(SCRIPT_DIR, "Clockify_Time_Report_Detailed_*.xlsx")
-    detailed_files = glob.glob(detailed_pattern)
+    detailed_files = []
+    for pattern in (
+        os.path.join(SCRIPT_DIR, "Clockify_Time_Report_Detailed_*.pdf"),
+        os.path.join(SCRIPT_DIR, "Clockify_Time_Report_Detailed_*.xlsx"),
+    ):
+        detailed_files.extend(glob.glob(pattern))
     
     if not detailed_files:
-        print(f"Error: No Detailed file found matching pattern: Clockify_Time_Report_Detailed_*.xlsx")
+        print("Error: No Detailed file found matching pattern: Clockify_Time_Report_Detailed_*.pdf")
         print(f"Searched in: {SCRIPT_DIR}")
         return None
     
@@ -513,7 +544,7 @@ def main():
     parser.add_argument('--rate', type=float, default=DEFAULT_RATE,
                         help=f'Billable rate per hour in BRL (default: {DEFAULT_RATE})')
     parser.add_argument('--detailed', type=str, default=None,
-                        help='Path to Detailed Excel file (auto-detected if not provided)')
+                        help='Path to Detailed PDF or Excel file (auto-detected if not provided)')
     parser.add_argument('--output', type=str, default=None,
                         help='Path for output Excel file (auto-generated if not provided)')
     
@@ -534,7 +565,7 @@ def main():
         output_file = args.output
     else:
         # Generate output filename based on input file date range
-        date_range = parse_date_range_from_filename(detailed_file)
+        date_range = parse_date_range(detailed_file)
         if date_range[0] and date_range[1]:
             output_name = f"Time_Report_Generated_{date_range[0].replace('/', '_')}-{date_range[1].replace('/', '_')}.xlsx"
         else:

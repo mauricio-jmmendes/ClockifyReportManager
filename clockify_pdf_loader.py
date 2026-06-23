@@ -278,7 +278,11 @@ def _is_valid_entry_start(line: ParsedLine) -> bool:
 def _group_words_into_lines(words: list[dict], bounds: dict[str, tuple[float, float]]) -> list[ParsedLine]:
     rows: dict[float, list[dict]] = {}
     for word in words:
-        if word["top"] >= 760 or _is_footer_line(word.get("text", "")):
+        # Skip the page footer by its text ("Created with Clockify"), not by a
+        # fixed vertical position. Clockify can place legitimate entries low on
+        # the page (below an arbitrary y-cutoff), and the whole-line footer check
+        # in _is_skippable_line drops the actual footer row regardless of height.
+        if _is_footer_line(word.get("text", "")):
             continue
         rows.setdefault(round(word["top"], 1), []).append(word)
 
@@ -424,7 +428,7 @@ def load_detailed_data_from_pdf(pdf_file: str) -> pd.DataFrame:
         for page in pdf.pages:
             page_words = [
                 word for word in page.extract_words()
-                if word["top"] < 760 and not _is_footer_line(word.get("text", ""))
+                if not _is_footer_line(word.get("text", ""))
             ]
             header_bounds = _find_header_bounds(page_words)
             if header_bounds:

@@ -30,7 +30,7 @@ from openpyxl.worksheet.table import Table, TableStyleInfo
 
 DEFAULT_RATE = 50
 APP_NAME = "Clockify Report Converter"
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 
 # Get the directory where this app/script resides
 if getattr(sys, 'frozen', False):
